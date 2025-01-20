@@ -74,32 +74,10 @@ class _HostScreenState extends State<HostScreen> {
             stackedItems = jsonList.map((json) => MovableItem.fromJson(json)).toList();
             print('stackedItems: $stackedItems');
           });
-
-          // Handle received files
-          for (var item in stackedItems) {
-            if (item.fileBytes != null && item.mediaPath != null) {
-              final savedPath = await saveReceivedFile(item.fileBytes!, item.mediaPath!);
-              setState(() {
-                item.mediaPath = savedPath; // Update mediaPath to the saved file path
-              });
-              print('savedfile $savedPath');
-              print('mediaPath ${item.mediaPath}');
-            }
-          }
         });
       });
     });
     setState(() {}); // Update the UI after getting the IP address
-  }
-
-  // Save received file to a permanent location
-  Future<String> saveReceivedFile(Uint8List fileBytes, String fileName) async {
-    final directory = await getApplicationDocumentsDirectory(); // Use getApplicationDocumentsDirectory
-    final filePath = '${directory.path}/$fileName';
-    final file = File(filePath);
-    await file.writeAsBytes(fileBytes);
-    print('File saved to $filePath');
-    return filePath; // Return the saved file path
   }
 
   @override
@@ -161,17 +139,17 @@ class _HostScreenState extends State<HostScreen> {
                                           height: item.height,
                                           decoration: BoxDecoration(
                                             borderRadius: BorderRadius.circular(8),
-                                            image: DecorationImage(
-                                              image: FileImage(File(item.mediaPath!)),
-                                              fit: BoxFit.cover,
-                                            ),
+                                          ),
+                                          child: Image.memory(
+                                            base64Decode(item.fileBytes!), // Decode Base64 to Uint8List
+                                            fit: BoxFit.fill,
                                           ),
                                         )
                                       : item.type == 'video'
                                           ? Container(
                                               width: item.width,
                                               height: item.height,
-                                              child: VideoWidget(filePath: item.mediaPath!),
+                                              child: VideoWidget(base64FileBytes: item.fileBytes!,),
                                             )
                                           : const SizedBox.shrink(),
                             );
@@ -190,7 +168,7 @@ class _HostScreenState extends State<HostScreen> {
 class MovableItem {
   final String type;
   String? mediaPath;
-  final Uint8List? fileBytes; // Add fileBytes
+  final String? fileBytes; // Add fileBytes
   final double width, height, posX, posY;
 
   MovableItem({
@@ -207,7 +185,7 @@ class MovableItem {
     return MovableItem(
       type: json['type'],
       mediaPath: json['mediaPath'],
-      fileBytes: json['fileBytes'] != null ? base64Decode(json['fileBytes']) : null,
+      fileBytes: json['fileBytes'],
       width: json['width'],
       height: json['height'],
       posX: json['posX'],
@@ -219,7 +197,7 @@ class MovableItem {
     return {
       'type': type,
       'mediaPath': mediaPath,
-      'fileBytes': fileBytes != null ? base64Encode(fileBytes!) : null,
+      'fileBytes': fileBytes,
       'width': width,
       'height': height,
       'posX': posX,
@@ -228,10 +206,11 @@ class MovableItem {
   }
 }
 
-class VideoWidget extends StatefulWidget {
-  final String filePath;
 
-  const VideoWidget({required this.filePath, super.key});
+class VideoWidget extends StatefulWidget {
+  final String base64FileBytes;
+
+  const VideoWidget({required this.base64FileBytes, super.key});
 
   @override
   State<VideoWidget> createState() => _VideoWidgetState();
@@ -239,34 +218,59 @@ class VideoWidget extends StatefulWidget {
 
 class _VideoWidgetState extends State<VideoWidget> {
   late VideoPlayerController _controller;
+  String? _tempFilePath;
+  bool _isVideoReady = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.file(File(widget.filePath))
-      ..setVolume(0)
-      ..initialize().then((_) {
-        setState(() {});
-        _controller.play();
-        _controller.setLooping(true);
-      });
+    _prepareVideo();
+  }
+
+  Future<void> _prepareVideo() async {
+    try {
+      // Decode Base64 string to Uint8List
+      final videoBytes = base64Decode(widget.base64FileBytes);
+
+      // Save the video bytes to a temporary file
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/temp_video_${DateTime.now().millisecondsSinceEpoch}.mp4');
+      await tempFile.writeAsBytes(videoBytes);
+      _tempFilePath = tempFile.path;
+
+      // Initialize the VideoPlayerController
+      _controller = VideoPlayerController.file(tempFile)
+        ..setVolume(0)
+        ..initialize().then((_) {
+          setState(() {
+            _isVideoReady = true;
+          });
+          _controller.play();
+          _controller.setLooping(true);
+        });
+    } catch (e) {
+      debugPrint("Error preparing video: $e");
+    }
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    // Clean up the temporary file
+    if (_tempFilePath != null) {
+      File(_tempFilePath!).deleteSync();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return _controller.value.isInitialized
+    return _isVideoReady
         ? AspectRatio(
             aspectRatio: _controller.value.aspectRatio,
-            child: VideoPlayer(
-              _controller,
-            ),
+            child: VideoPlayer(_controller),
           )
         : const Center(child: CircularProgressIndicator());
   }
 }
+
